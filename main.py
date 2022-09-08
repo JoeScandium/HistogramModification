@@ -1,10 +1,12 @@
 # encoding:utf-8
 import numpy as np
-from PySide2.QtWidgets import QApplication, QMainWindow, QLabel, QPushButton, QPlainTextEdit, QMessageBox
+from PySide2.QtWidgets import QApplication, QMainWindow, QLabel, QPushButton, QPlainTextEdit
 from PySide2.QtGui import QIcon
 import cv2
 import os
 import imghdr
+
+from matplotlib import pyplot as plt
 
 
 class MainWindow:
@@ -54,6 +56,9 @@ class MainWindow:
         self.button_color_equal = QPushButton('彩直均衡化', self.window)
         self.button_color_equal.move(360, 340)
 
+        self.button_histogram_specification = QPushButton('彩直规定化', self.window)
+        self.button_histogram_specification.move(360, 380)
+
         self.label = QLabel(self.window)
         self.label.resize(250, 120)
         self.label.move(65, 160)
@@ -64,20 +69,146 @@ class MainWindow:
         self.button_rotated.clicked.connect(self.handle_calc_rotated)
         self.button_flip.clicked.connect(self.handle_calc_flip)
         self.button_histogram.clicked.connect(self.handle_histogram_display)
-        self.button_color_equal.clicked.connect(self.handle_color_equal)
+        self.button_color_equal.clicked.connect(self.handle_color_equal_display)
+        self.button_histogram_specification.clicked.connect(self.histogram_specification_display)
 
     @staticmethod
     def calc_draw_hist(image, color):
         hist = cv2.calcHist([image], [0], None, [256], [0.0, 255.0])
         minVal, maxVal, minLoc, maxLoc = cv2.minMaxLoc(hist)
         histImg = np.zeros([256, 256, 3], np.uint8)
-        hpt = int(0.9 * 256);
+        hpt = int(0.9 * 256)
 
         for h in range(256):
             intensity = int(hist[h] * hpt / maxVal)
             cv2.line(histImg, (h, 256), (h, 256 - intensity), color)
 
-        return histImg;
+        return histImg
+
+    @staticmethod
+    def handle_color_equal(image):
+        (b, g, r) = cv2.split(image)
+
+        bH = cv2.equalizeHist(b)
+        gH = cv2.equalizeHist(g)
+        rH = cv2.equalizeHist(r)
+
+        # 合并每一个通道
+        return cv2.merge((bH, gH, rH))
+
+    @staticmethod
+    def histogram_specification(img, ref):
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        ref_gray = cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY)
+        hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
+        hist_ref = cv2.calcHist([ref_gray], [0], None, [256], [0, 256])
+        # 计算累计直方图
+        out = np.zeros_like(img)
+        tmp_ref = 0.0
+        h_ref = hist_ref.copy()
+        for i in range(256):
+            tmp_ref += h_ref[i]
+            h_ref[i] = tmp_ref
+        tmp = 0.0
+        h_acc = hist.copy()
+        for i in range(256):
+            tmp += hist[i]
+            h_acc[i] = tmp
+        # 计算映射
+        diff = np.zeros([256, 256])
+        for i in range(256):
+            for j in range(256):
+                diff[i][j] = np.fabs(h_ref[j] - h_acc[i])
+        M = np.zeros(256)
+        for i in range(256):
+            index = 0
+            mini = diff[i][0]  # mini = 1.
+            for j in range(256):
+                if diff[i][j] < mini:
+                    mini = diff[i][j]
+                    index = int(j)
+            M[i] = index
+        out = M[gray].astype(np.float32)
+
+        hist_img = cv2.calcHist([img], [0], None, [255], [0, 255])
+        hist_ref = cv2.calcHist([ref], [0], None, [255], [0, 255])
+        hist_out = cv2.calcHist([out], [0], None, [255], [0, 255])
+
+        cv2.imshow("img", img)
+        cv2.imshow("ref", ref)
+        cv2.imshow("out", out)
+        cv2.waitKey(0)
+
+        plt.subplot(231)
+        plt.title("img")
+        plt.imshow(img)
+        plt.subplot(234)
+        plt.plot(hist_img)
+
+        plt.subplot(232)
+        plt.title("ref")
+        plt.imshow(ref)
+        plt.subplot(235)
+        plt.plot(hist_ref)
+
+        plt.subplot(233)
+        plt.title("out")
+        plt.imshow(out)
+        plt.subplot(236)
+        plt.plot(hist_out)
+
+        plt.show()
+
+        """
+        def_img = img
+        color = ('b', 'g', 'r')
+        for i, col in enumerate(color):
+            hist1, bins = np.histogram(img[:, :, i].ravel(), 256, [0, 256])
+            hist2, bins = np.histogram(dst[:, :, i].ravel(), 256, [0, 256])
+            # 获得累计直方图
+            cdf1 = hist1.cumsum()
+            cdf2 = hist2.cumsum()
+            # 归一化处理
+            cdf1_hist = hist1.cumsum() / cdf1.max()
+            cdf2_hist = hist2.cumsum() / cdf2.max()
+
+            # diff_cdf 里是每2个灰度值比率间的差值
+            diff_cdf = [[0 for i in range(256)] for i in range(256)]
+            for j in range(256):
+                for k in range(256):
+                    diff_cdf[j][k] = abs(cdf1_hist[j] - cdf2_hist[k])
+            # FigA 中的灰度级与目标灰度级的对应表
+            lut = np.zeros(256, dtype=np.int)
+            for j in range(256):
+                squ_min = diff_cdf[j][0]
+                index = 0
+                for k in range(256):
+                    if squ_min > diff_cdf[j][k]:
+                        squ_min = diff_cdf[j][k]
+                        index = k
+                lut[j] = ([j, index])
+
+            h = int(img.shape[0])
+            w = int(dst.shape[1])
+            # 对原图像进行灰度值的映射
+            for j in range(h):
+                for k in range(w):
+                    def_img[j, k, i] = lut[img[j, k, i]][1]
+
+        cv2.namedWindow('Fig6A', 0)
+        cv2.resizeWindow('Fig6A', 400, 520)
+        cv2.namedWindow('Fig6B', 0)
+        cv2.resizeWindow('Fig6B', 400, 520)
+        cv2.namedWindow('def', 0)
+        cv2.resizeWindow('def', 400, 520)
+        cv2.imshow('Fig6A', img)
+        cv2.imshow('Fig6B', dst)
+        cv2.imshow('def', def_img)
+
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+        """
 
     def handle_calc_add_confirm(self):
         info_add = self.textEdit_add.toPlainText()
@@ -170,20 +301,18 @@ class MainWindow:
         cv2.imshow("histImgR", histImgR)
         cv2.waitKey(0)
 
-    def handle_color_equal(self):
+    def handle_color_equal_display(self):
         self.image = cv2.imread("./test.jpg", -1)  # 测试用临时地址
-        (b, g, r) = cv2.split(self.image)
-
-        bH = cv2.equalizeHist(b)
-        gH = cv2.equalizeHist(g)
-        rH = cv2.equalizeHist(r)
-
-        # 合并每一个通道
-        result = cv2.merge((bH, gH, rH))
+        result = self.handle_color_equal(self.image)
 
         cv2.imshow("Original", self.image)
         cv2.imshow("Result", result)
         cv2.waitKey(0)
+
+    def histogram_specification_display(self):
+        img = cv2.imread("test.jpg")
+        dst = cv2.imread("test1.jpg")
+        self.histogram_specification(img, dst)
 
     def handle_calc_error(self):
         self.window_err = QMainWindow()
